@@ -149,11 +149,38 @@
 
     .action-panel {
       padding: 12px;
-      display: flex;
+      display: grid;
       gap: 8px;
-      flex-direction: column;
-      justify-content: center;
-      min-width: 150px;
+      align-content: center;
+      min-width: 220px;
+    }
+
+    .action-buttons,
+    .toggle-buttons {
+      display: grid;
+      gap: 8px;
+    }
+
+    .toggle-btn {
+      color: #4e342e;
+      background: linear-gradient(180deg, #fffaf0, #ffe29c);
+      box-shadow: 0 6px 0 #d5aa4d, 0 12px 18px var(--shadow);
+      font-size: 13px;
+      padding: 10px 12px;
+    }
+
+    .toggle-btn:active {
+      box-shadow: 0 2px 0 #d5aa4d, 0 7px 12px var(--shadow);
+    }
+
+    .toggle-btn.toggle-off {
+      color: #37474f;
+      background: linear-gradient(180deg, #eceff1, #b0bec5);
+      box-shadow: 0 6px 0 #78909c, 0 12px 18px var(--shadow);
+    }
+
+    .toggle-btn.toggle-off:active {
+      box-shadow: 0 2px 0 #78909c, 0 7px 12px var(--shadow);
     }
 
     button {
@@ -277,8 +304,12 @@
       }
 
       .action-panel {
-        flex-direction: row;
         min-width: 0;
+      }
+
+      .action-buttons,
+      .toggle-buttons {
+        grid-template-columns: 1fr 1fr;
       }
 
       button {
@@ -324,8 +355,14 @@
       </section>
 
       <section class="panel action-panel">
-        <button class="secondary" id="resetBtn">Chơi lại</button>
-        <button id="nextBtn" disabled>Tiếp theo</button>
+        <div class="action-buttons">
+          <button class="secondary" id="resetBtn">Chơi lại</button>
+          <button id="nextBtn" disabled>Tiếp theo</button>
+        </div>
+        <div class="toggle-buttons">
+          <button class="toggle-btn" id="soundToggleBtn" type="button" aria-pressed="true">Âm thanh: Bật</button>
+          <button class="toggle-btn" id="voiceToggleBtn" type="button" aria-pressed="true">Giọng nói: Bật</button>
+        </div>
       </section>
     </div>
 
@@ -398,6 +435,8 @@
       const progressDots = document.getElementById('progressDots');
       const resetBtn = document.getElementById('resetBtn');
       const nextBtn = document.getElementById('nextBtn');
+      const soundToggleBtn = document.getElementById('soundToggleBtn');
+      const voiceToggleBtn = document.getElementById('voiceToggleBtn');
 
       const levels = [
         { start: 0, add: 1 },
@@ -431,6 +470,18 @@
       let isPointerDown = false;
       let celebrationTime = 0;
       let audioCtx = null;
+      let audioMaster = null;
+      let soundEnabled = true;
+      let voiceEnabled = true;
+      let hasUserInteracted = false;
+      let audioUnlocked = false;
+      let roundIntroPending = false;
+      let speechSequence = 0;
+      let preferredVoice = null;
+      const speechTimers = new Set();
+      const speechSynthesisRef = 'speechSynthesis' in window ? window.speechSynthesis : null;
+      const speechSupported = Boolean(speechSynthesisRef && window.SpeechSynthesisUtterance);
+      const STEP_WORDS = ['Không', 'Một', 'Hai', 'Ba', 'Bốn', 'Năm', 'Sáu', 'Bảy', 'Tám', 'Chín', 'Mười'];
 
       const STEP_COUNT = 11;
       const STEP_WIDTH = 1.08;
@@ -492,8 +543,30 @@
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
         window.addEventListener('pointermove', onPointerMove);
         window.addEventListener('pointerup', onPointerUp);
-        resetBtn.addEventListener('click', () => startLevel(currentLevelIndex));
-        nextBtn.addEventListener('click', () => startLevel((currentLevelIndex + 1) % levels.length));
+        resetBtn.addEventListener('click', () => {
+          unlockAudio(false);
+          startLevel(currentLevelIndex);
+        });
+        nextBtn.addEventListener('click', () => {
+          unlockAudio(false);
+          startLevel((currentLevelIndex + 1) % levels.length);
+        });
+        soundToggleBtn.addEventListener('click', () => {
+          unlockAudio(false);
+          setSoundEnabled(!soundEnabled);
+        });
+        voiceToggleBtn.addEventListener('click', () => {
+          unlockAudio(false);
+          setVoiceEnabled(!voiceEnabled);
+        });
+
+        if (speechSupported) {
+          speechSynthesisRef.addEventListener?.('voiceschanged', () => {
+            preferredVoice = null;
+          });
+        }
+
+        updateAudioButtons();
       }
 
       function createWorld() {
@@ -730,6 +803,7 @@
       }
 
       function startLevel(index) {
+        stopSpeaking();
         currentLevelIndex = index;
         currentLevel = levels[index];
         heroValue = currentLevel.start;
@@ -738,6 +812,7 @@
         jumpState = null;
         celebrationTime = 0;
         nextBtn.disabled = true;
+        roundIntroPending = voiceEnabled && !hasUserInteracted;
         cardGroup.visible = true;
         cardGroup.position.copy(cardHome);
         cardGroup.rotation.set(0, 0, 0);
@@ -749,6 +824,10 @@
         updateStepHighlights();
         updateHud();
         updateProgressDots(0);
+
+        if (voiceEnabled && hasUserInteracted) {
+          speakRoundIntro(currentLevel.start, currentLevel.add);
+        }
       }
 
       function updateHud() {
@@ -833,7 +912,7 @@
       function onPointerDown(event) {
         if (state !== 'ready') return;
         isPointerDown = true;
-        ensureAudio();
+        unlockAudio(true);
         updatePointer(event);
         raycaster.setFromCamera(pointer, camera);
         const hits = raycaster.intersectObjects(cardGroup.children, true);
@@ -841,6 +920,7 @@
         const root = hits[0].object.userData.cardRoot;
         if (root !== cardGroup) return;
         dragging = true;
+        playPop();
         cardGroup.scale.set(1.07, 1.07, 1.07);
         if (raycaster.ray.intersectPlane(dragPlane, dragPoint)) {
           dragOffset.copy(cardGroup.position).sub(dragPoint);
@@ -873,9 +953,13 @@
         heroDropPosition.z += 0.4;
         const distance = cardGroup.position.distanceTo(heroDropPosition);
         if (distance < 1.9) {
+          playDrop();
+          speak(`Thêm ${currentLevel.add} bước nhé.`);
           beginJumpLesson();
         } else {
+          playHint();
           statusText.innerHTML = `Đưa thẻ lại gần bạn nhỏ nhé.<small>Khi thẻ chạm bạn nhỏ, bạn ấy sẽ nhảy thêm ${currentLevel.add} bậc.</small>`;
+          speak('Mình thử đưa thẻ lại gần bạn nhỏ nhé.');
           animateCardBack();
         }
       }
@@ -889,10 +973,10 @@
       function animateCardBack() {
         const start = cardGroup.position.clone();
         const duration = 0.25;
-        let elapsed = 0;
-        const animateBack = () => {
+        const startedAt = performance.now();
+        const animateBack = (now) => {
           if (dragging || state !== 'ready') return;
-          elapsed += clock.getDelta();
+          const elapsed = (now - startedAt) / 1000;
           const t = Math.min(elapsed / duration, 1);
           const ease = 1 - Math.pow(1 - t, 3);
           cardGroup.position.lerpVectors(start, cardHome, ease);
@@ -904,15 +988,17 @@
       function beginJumpLesson() {
         state = 'animating';
         cardGroup.visible = false;
-        playTone(540, 0.06, 'sine', 0.04);
         jumpState = {
           completed: 0,
-          progress: 0,
           fromValue: currentLevel.start,
           toValue: currentLevel.start + 1,
+          progress: 0,
           duration: 0.48,
-          pause: 0.12
+          pauseDuration: 0.12,
+          pauseRemaining: voiceEnabled ? 1.22 : 0.18,
+          segmentStarted: false
         };
+        scheduleSpeech('Mình cùng đếm nào.', 420, false);
         updateHud();
         updateProgressDots(0);
       }
@@ -920,7 +1006,17 @@
       function updateJump(delta) {
         if (!jumpState) return;
         const target = currentLevel.start + currentLevel.add;
-        jumpState.progress += delta / jumpState.duration;
+        if (jumpState.pauseRemaining > 0) {
+          jumpState.pauseRemaining = Math.max(0, jumpState.pauseRemaining - delta);
+          if (jumpState.pauseRemaining > 0) return;
+        }
+
+        if (!jumpState.segmentStarted) {
+          jumpState.segmentStarted = true;
+          playStep();
+        }
+
+        jumpState.progress = Math.min(jumpState.progress + delta / jumpState.duration, 1);
         const t = Math.min(jumpState.progress, 1);
         const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
         const arc = Math.sin(t * Math.PI) * 0.75;
@@ -935,30 +1031,37 @@
         if (t >= 1) {
           heroValue = to;
           setHeroOnStep(heroValue);
-          playTone(660 + jumpState.completed * 40, 0.08, 'triangle', 0.035);
+          playTick();
           jumpState.completed += 1;
+          speakStepCount(jumpState.completed, heroValue);
           updateStepHighlights();
           updateProgressDots(jumpState.completed);
 
           if (heroValue >= target) {
             finishLevel();
           } else {
-            jumpState.progress = -jumpState.pause / jumpState.duration;
+            jumpState.progress = 0;
             jumpState.fromValue = heroValue;
             jumpState.toValue = heroValue + 1;
+            jumpState.pauseRemaining = jumpState.pauseDuration;
+            jumpState.segmentStarted = false;
             updateHud();
           }
         }
       }
 
       function finishLevel() {
+        const start = currentLevel.start;
+        const step = currentLevel.add;
+        const result = start + step;
         state = 'complete';
         jumpState = null;
         heroGroup.rotation.z = 0;
         nextBtn.disabled = false;
-        resultBox.textContent = currentLevel.start + currentLevel.add;
+        resultBox.textContent = result;
         spawnConfetti();
-        playSuccessSound();
+        playSuccess();
+        scheduleSpeechTask(() => speakResult(start, step, result), 220);
         updateHud();
       }
 
@@ -990,6 +1093,7 @@
           confettiGroup.add(mesh);
         }
         celebrationTime = 2.4;
+        playSparkleBurst();
       }
 
       function clearConfetti() {
@@ -1096,34 +1200,234 @@
         renderer.render(scene, camera);
       }
 
-      function ensureAudio() {
-        if (!audioCtx) {
-          const AudioContext = window.AudioContext || window.webkitAudioContext;
-          if (AudioContext) audioCtx = new AudioContext();
+      function initAudio() {
+        if (audioCtx) return audioCtx;
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) return null;
+
+        try {
+          audioCtx = new AudioContext();
+          audioMaster = audioCtx.createGain();
+          audioMaster.gain.value = 0.75;
+          audioMaster.connect(audioCtx.destination);
+        } catch (error) {
+          audioCtx = null;
+          audioMaster = null;
         }
-        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+
+        return audioCtx;
       }
 
-      function playTone(freq, duration = 0.08, type = 'sine', volume = 0.03) {
-        if (!audioCtx) return;
-        const now = audioCtx.currentTime;
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = type;
-        osc.frequency.setValueAtTime(freq, now);
-        gain.gain.setValueAtTime(0, now);
-        gain.gain.linearRampToValueAtTime(volume, now + 0.012);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-        osc.connect(gain).connect(audioCtx.destination);
-        osc.start(now);
-        osc.stop(now + duration + 0.02);
+      function unlockAudio(allowRoundIntro = false) {
+        hasUserInteracted = true;
+        const ctx = initAudio();
+
+        if (ctx && ctx.state === 'suspended') {
+          ctx.resume().catch(() => {});
+        }
+
+        audioUnlocked = Boolean(ctx);
+
+        if (allowRoundIntro && roundIntroPending && state === 'ready') {
+          speakRoundIntro(currentLevel.start, currentLevel.add);
+        }
       }
 
-      function playSuccessSound() {
-        ensureAudio();
-        playTone(660, 0.1, 'triangle', 0.035);
-        setTimeout(() => playTone(820, 0.11, 'triangle', 0.035), 110);
-        setTimeout(() => playTone(990, 0.16, 'triangle', 0.038), 230);
+      function playTone({
+        frequency = 440,
+        endFrequency = frequency,
+        duration = 0.08,
+        type = 'sine',
+        volume = 0.03,
+        attack = 0.01,
+        delay = 0
+      } = {}) {
+        if (!soundEnabled || !audioCtx || !audioMaster || !audioUnlocked) return;
+
+        try {
+          const now = audioCtx.currentTime + delay;
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = type;
+          osc.frequency.setValueAtTime(frequency, now);
+          if (endFrequency !== frequency) {
+            osc.frequency.exponentialRampToValueAtTime(Math.max(24, endFrequency), now + duration);
+          }
+          gain.gain.setValueAtTime(0.0001, now);
+          gain.gain.linearRampToValueAtTime(volume, now + attack);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+          osc.connect(gain).connect(audioMaster);
+          osc.start(now);
+          osc.stop(now + duration + 0.03);
+        } catch (error) {
+          // Ignore audio synthesis errors so gameplay keeps running.
+        }
+      }
+
+      function playPop() {
+        playTone({ frequency: 720, endFrequency: 980, duration: 0.07, type: 'triangle', volume: 0.028 });
+      }
+
+      function playDrop() {
+        playTone({ frequency: 420, endFrequency: 280, duration: 0.09, type: 'sine', volume: 0.026 });
+        playTone({ frequency: 520, endFrequency: 430, duration: 0.07, type: 'triangle', volume: 0.02, delay: 0.03 });
+      }
+
+      function playStep() {
+        playTone({ frequency: 460, endFrequency: 660, duration: 0.11, type: 'triangle', volume: 0.026 });
+      }
+
+      function playTick() {
+        playTone({ frequency: 1120, endFrequency: 1240, duration: 0.05, type: 'square', volume: 0.012, attack: 0.004 });
+      }
+
+      function playSuccess() {
+        playTone({ frequency: 660, endFrequency: 720, duration: 0.1, type: 'triangle', volume: 0.028 });
+        playTone({ frequency: 840, endFrequency: 940, duration: 0.12, type: 'triangle', volume: 0.028, delay: 0.12 });
+        playTone({ frequency: 1040, endFrequency: 1240, duration: 0.18, type: 'triangle', volume: 0.03, delay: 0.25 });
+      }
+
+      function playHint() {
+        playTone({ frequency: 320, endFrequency: 250, duration: 0.12, type: 'sine', volume: 0.016 });
+      }
+
+      function playSparkleBurst() {
+        playTone({ frequency: 1320, endFrequency: 1480, duration: 0.08, type: 'triangle', volume: 0.014, delay: 0.08 });
+        playTone({ frequency: 1560, endFrequency: 1720, duration: 0.08, type: 'triangle', volume: 0.012, delay: 0.16 });
+        playTone({ frequency: 1760, endFrequency: 1980, duration: 0.1, type: 'triangle', volume: 0.011, delay: 0.24 });
+      }
+
+      function speak(text) {
+        if (!voiceEnabled || !speechSupported || !hasUserInteracted || !text) return;
+        stopSpeaking();
+        speakNow(text);
+      }
+
+      function stopSpeaking() {
+        clearSpeechTimers();
+        speechSequence += 1;
+        if (!speechSupported) return;
+        try {
+          speechSynthesisRef.cancel();
+        } catch (error) {
+          // Ignore speech cancellation issues so the game never crashes.
+        }
+      }
+
+      function speakRoundIntro(start, step) {
+        roundIntroPending = false;
+        if (!voiceEnabled || !hasUserInteracted) {
+          roundIntroPending = voiceEnabled && !hasUserInteracted;
+          return;
+        }
+        speak(`Bắt đầu ở số ${start}.`);
+      }
+
+      function speakStepCount(currentStep, currentNumber) {
+        const label = STEP_WORDS[currentStep] || String(currentNumber);
+        speak(label);
+      }
+
+      function speakResult(start, step, result) {
+        speak(buildResultMessage(start, step, result));
+      }
+
+      function setSoundEnabled(enabled) {
+        soundEnabled = Boolean(enabled);
+        updateAudioButtons();
+      }
+
+      function setVoiceEnabled(enabled) {
+        voiceEnabled = Boolean(enabled);
+        if (!voiceEnabled) {
+          roundIntroPending = false;
+          stopSpeaking();
+        } else if (state === 'ready') {
+          roundIntroPending = true;
+        }
+        updateAudioButtons();
+      }
+
+      function updateAudioButtons() {
+        updateToggleButton(soundToggleBtn, 'Âm thanh', soundEnabled);
+        updateToggleButton(voiceToggleBtn, 'Giọng nói', voiceEnabled);
+      }
+
+      function updateToggleButton(button, label, enabled) {
+        button.textContent = `${label}: ${enabled ? 'Bật' : 'Tắt'}`;
+        button.setAttribute('aria-pressed', String(enabled));
+        button.classList.toggle('toggle-off', !enabled);
+      }
+
+      function clearSpeechTimers() {
+        for (const timer of speechTimers) clearTimeout(timer);
+        speechTimers.clear();
+      }
+
+      function scheduleSpeech(text, delay = 0, interrupt = false) {
+        scheduleSpeechTask(() => {
+          if (interrupt) {
+            speak(text);
+          } else {
+            queueSpeech(text);
+          }
+        }, delay);
+      }
+
+      function scheduleSpeechTask(task, delay = 0) {
+        if (!voiceEnabled || !speechSupported || !hasUserInteracted) return;
+        const token = speechSequence;
+        const timer = window.setTimeout(() => {
+          speechTimers.delete(timer);
+          if (token !== speechSequence || !voiceEnabled) return;
+          task();
+        }, delay);
+        speechTimers.add(timer);
+      }
+
+      function queueSpeech(text) {
+        if (!voiceEnabled || !speechSupported || !hasUserInteracted || !text) return;
+        speakNow(text);
+      }
+
+      function speakNow(text) {
+        if (!voiceEnabled || !speechSupported || !hasUserInteracted || !text) return;
+        try {
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.lang = 'vi-VN';
+          utterance.rate = 0.9;
+          utterance.pitch = 1.1;
+          utterance.volume = 0.9;
+          const voice = getPreferredVoice();
+          if (voice) utterance.voice = voice;
+          speechSynthesisRef.speak(utterance);
+        } catch (error) {
+          // Speech is optional; ignore unsupported browser/runtime cases.
+        }
+      }
+
+      function getPreferredVoice() {
+        if (!speechSupported) return null;
+        if (preferredVoice) return preferredVoice;
+
+        try {
+          const voices = speechSynthesisRef.getVoices() || [];
+          preferredVoice =
+            voices.find((voice) => voice.lang?.toLowerCase().startsWith('vi')) ||
+            voices.find((voice) => {
+              const name = voice.name?.toLowerCase() || '';
+              return name.includes('viet') || name.includes('vietnam');
+            }) ||
+            null;
+        } catch (error) {
+          preferredVoice = null;
+        }
+
+        return preferredVoice;
+      }
+
+      function buildResultMessage(start, step, result) {
+        return `Đến số ${result} rồi. Vậy ${start} cộng ${step} bằng ${result}. Bắt đầu ở ${start}, thêm ${step} bước, đến ${result}.`;
       }
     }
   </script>
