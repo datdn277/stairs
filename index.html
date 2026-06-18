@@ -53,7 +53,7 @@
       top: 14px;
       z-index: 5;
       display: grid;
-      grid-template-columns: 1.15fr 1fr auto;
+      grid-template-columns: 1fr auto;
       gap: 12px;
       align-items: start;
       pointer-events: none;
@@ -221,39 +221,34 @@
 
     .bottom-help {
       position: absolute;
-      left: 50%;
+      right: 16px;
       bottom: max(16px, env(safe-area-inset-bottom));
-      transform: translateX(-50%);
-      width: min(920px, calc(100vw - 32px));
+      width: auto;
       z-index: 5;
-      padding: 14px 18px;
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 14px;
+      padding: 12px 14px;
+      display: flex;
+      justify-content: center;
       align-items: center;
       pointer-events: auto;
-    }
-
-    .status {
-      font-weight: 900;
-      font-size: clamp(15px, 2vw, 20px);
-      line-height: 1.35;
-      color: #37474f;
-    }
-
-    .status small {
-      display: block;
-      margin-top: 4px;
-      color: var(--muted);
-      font-size: 0.82em;
-      font-weight: 800;
     }
 
     .progress-dots {
       display: flex;
       gap: 6px;
-      justify-content: flex-end;
+      justify-content: center;
       flex-wrap: wrap;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
 
     .dot {
@@ -319,13 +314,12 @@
       }
 
       .bottom-help {
-        width: calc(100vw - 16px);
+        right: 8px;
         bottom: max(8px, env(safe-area-inset-bottom));
         padding: 10px 12px;
-        grid-template-columns: 1fr;
       }
 
-      .progress-dots { justify-content: flex-start; }
+      .progress-dots { justify-content: center; }
       .dot { width: 13px; height: 13px; }
     }
   </style>
@@ -335,16 +329,11 @@
     <div id="scene" aria-label="Không gian game 3D cầu thang số"></div>
 
     <div class="hud">
-      <section class="panel title-panel">
+      <section class="panel equation-panel" aria-live="polite">
         <div class="title-row">
-          <h1>🏃 Cầu thang số</h1>
+          <div class="equation-label">Phép cộng đang học</div>
           <span class="level-pill" id="levelText">Level 1</span>
         </div>
-        <div class="subtitle" id="challengeText">Kéo thẻ cộng vào bạn nhỏ để bạn ấy nhảy thêm từng bậc.</div>
-      </section>
-
-      <section class="panel equation-panel" aria-live="polite">
-        <div class="equation-label">Phép cộng đang học</div>
         <div class="equation">
           <span class="math-box" id="startBox">0</span>
           <span>+</span>
@@ -367,12 +356,10 @@
     </div>
 
     <section class="panel bottom-help" aria-live="polite">
-      <div class="status" id="statusText">
-        Kéo thẻ <b>+1</b> vào bạn nhỏ.
-        <small>Bé sẽ thấy: cộng nghĩa là đi thêm từng bước trên dãy số.</small>
-      </div>
       <div class="progress-dots" id="progressDots" aria-label="Số bước đã nhảy"></div>
     </section>
+
+    <div class="sr-only" id="statusText" aria-live="polite"></div>
 
     <div class="loading" id="loading">
       <div class="message-card">
@@ -427,7 +414,6 @@
       const sceneEl = document.getElementById('scene');
       const loadingEl = document.getElementById('loading');
       const levelText = document.getElementById('levelText');
-      const challengeText = document.getElementById('challengeText');
       const startBox = document.getElementById('startBox');
       const addBox = document.getElementById('addBox');
       const resultBox = document.getElementById('resultBox');
@@ -1121,20 +1107,19 @@
       function updateHud() {
         const target = currentLevel.start + currentLevel.add;
         levelText.textContent = `Level ${currentLevelIndex + 1}/${levels.length}`;
-        challengeText.textContent = `Bắt đầu ở số ${currentLevel.start}. Kéo thẻ +${currentLevel.add} vào bạn nhỏ để đi thêm ${currentLevel.add} bậc.`;
         startBox.textContent = currentLevel.start;
         addBox.textContent = currentLevel.add;
         resultBox.textContent = state === 'complete' ? target : '?';
 
         if (state === 'ready') {
-          statusText.innerHTML = `Kéo thẻ <b>+${currentLevel.add}</b> vào bạn nhỏ.<small>Cộng nghĩa là: đang ở ${currentLevel.start}, đi thêm ${currentLevel.add} bước về phía trước.</small>`;
+          statusText.textContent = `Kéo thẻ cộng ${currentLevel.add} vào bạn nhỏ. Cộng nghĩa là đang ở ${currentLevel.start}, đi thêm ${currentLevel.add} bước về phía trước.`;
         } else if (state === 'animating') {
           const done = jumpState ? jumpState.completed : 0;
           const from = currentLevel.start + done;
           const to = Math.min(from + 1, target);
-          statusText.innerHTML = `Bước ${Math.min(done + 1, currentLevel.add)}/${currentLevel.add}: ${from} → ${to}<small>Mỗi bước nhảy làm số tăng thêm 1.</small>`;
+          statusText.textContent = `Bước ${Math.min(done + 1, currentLevel.add)} trên ${currentLevel.add}: ${from} đến ${to}.`;
         } else if (state === 'complete') {
-          statusText.innerHTML = `Tuyệt vời! ${currentLevel.start} + ${currentLevel.add} = ${target}.<small>Bé đã đi thêm ${currentLevel.add} bước và dừng ở số ${target}.</small>`;
+          statusText.textContent = `${currentLevel.start} cộng ${currentLevel.add} bằng ${target}. Bé đã đi thêm ${currentLevel.add} bước và dừng ở số ${target}.`;
         }
       }
 
@@ -1248,7 +1233,7 @@
           beginJumpLesson();
         } else {
           playHint();
-          statusText.innerHTML = `Đưa thẻ lại gần bạn nhỏ nhé.<small>Khi thẻ chạm bạn nhỏ, bạn ấy sẽ nhảy thêm ${currentLevel.add} bậc.</small>`;
+          statusText.textContent = `Đưa thẻ lại gần bạn nhỏ nhé. Khi thẻ chạm bạn nhỏ, bạn ấy sẽ nhảy thêm ${currentLevel.add} bậc.`;
           speak('Mình thử đưa thẻ lại gần bạn nhỏ nhé.');
           animateCardBack();
         }
